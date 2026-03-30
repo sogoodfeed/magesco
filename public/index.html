@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>MagescoPro</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f9fafb; }
+  pre { white-space: pre-wrap; font-family: inherit; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #f1f1f1; } ::-webkit-scrollbar-thumb { background: #c4b5fd; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+const STORAGE_PREFIX = "magesco_";
+function lsGet(k){ try{ var v=localStorage.getItem(STORAGE_PREFIX+k); return v?JSON.parse(v):null; }catch(e){return null;} }
+function lsSet(k,v){ try{ localStorage.setItem(STORAGE_PREFIX+k,JSON.stringify(v)); }catch(e){} }
+
+const INIT_AOS = [];
+const INIT_ENTS = [];
+const INIT_LOTS = [];
+const STATUTS = ["En cours","Envoyé","Gagné","Perdu"];
+const STATUT_COLORS = {"En cours":"bg-blue-100 text-blue-700","Envoyé":"bg-yellow-100 text-yellow-700","Gagné":"bg-green-100 text-green-700","Perdu":"bg-red-100 text-red-700"};
+const GRADIENT = "linear-gradient(135deg,#6c3de8 0%,#3b82f6 100%)";
+const ENT_COLORS = ["#6c3de8","#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316"];
+const AI_MODES = ["analyse","memoire","dc1","dc2","prix"];
+const INSTR_LABELS = {analyse:"Analyse AO",memoire:"Mémoire technique",dc1:"DC1",dc2:"DC2",prix:"Prix & Planning"};
+const MEMOIRE_TABS = [{id:"mandataire",label:"👑 Mandataire"},{id:"coco1",label:"🤝 Co-contractant 1"},{id:"coco2",label:"🤝 Co-contractant 2"}];
+const PRIX_TABS = [{id:"dpgf",label:"📊 DPGF"},{id:"bpu",label:"📋 BPU"},{id:"dqe",label:"🔢 DQE"},{id:"gantt",label:"📅 Gantt"}];
+const DOC_SLOTS = [
+  {key:"kbis",label:"Kbis",icon:"🏛️"},{key:"assurance",label:"Assurance RC Pro",icon:"🛡️"},
+  {key:"qualification",label:"Qualification",icon:"🏅"},{key:"reference1",label:"Référence client 1",icon:"📋"},
+  {key:"reference2",label:"Référence client 2",icon:"📋"},{key:"reference3",label:"Référence client 3",icon:"📋"},
+  {key:"activite",label:"Présentation activité",icon:"🏢"},{key:"bilan",label:"Bilan financier",icon:"💰"},
+  {key:"attestation",label:"Attestations fiscales",icon:"📜"},{key:"autres",label:"Autres",icon:"📎"},
+];
+const DOC_TYPES_LOT = ["Kbis","Bilan financier","Référence client","Attestation fiscale","Attestation sociale","CV intervenant","Assurance RC Pro","Autre"];
+
+function defaultAiConfig() {
+  return {
+    analyse:{prompt:"",docMetas:[]},
+    memoire:{globalPrompt:"",mandataire:{entId:"",prompt:"",docMetas:[]},coco1:{entId:"",prompt:"",docMetas:[]},coco2:{entId:"",prompt:"",docMetas:[]}},
+    dc1:{entIds:[],prompt:"",docMetas:[]},
+    dc2:{entIds:[],prompt:"",docMetas:[]},
+    prix:{dpgf:{prompt:"",docMetas:[]},bpu:{prompt:"",docMetas:[]},dqe:{prompt:"",docMetas:[]},gantt:{prompt:"",docMetas:[]}},
+  };
+}
+
+var fileStore = {};
+function storeFile(f){ var id="f_"+Date.now()+"_"+Math.random().toString(36).slice(2); fileStore[id]=f; return {id,name:f.name,size:f.size,type:f.type}; }
+function getFile(id){ return fileStore[id]||null; }
+function readFileAsBase64(f){ return new Promise((res,rej)=>{ var r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(f); }); }
+function readFileAsText(f){ return new Promise((res,rej)=>{ var r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsText(f); }); }
+
+function Avatar({nom,couleur,size=8}){ var s=size*4; return <div className="rounded-xl flex items-center justify-center text-white font-bold text-sm flex-shrink-0" style={{width:s,height:s,background:couleur||GRADIENT}}>{nom?nom.charAt(0).toUpperCase():"?"}</div>; }
+
+function ConfirmDialog({msg,onConfirm,onCancel}){
+  return <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+    <div className="bg-white rounded-2xl shadow-xl p-6 max-w-sm w-full mx-4">
+      <div className="text-2xl mb-3 text-center">⚠️</div>
+      <p className="text-sm text-gray-700 text-center mb-5">{msg}</p>
+      <div className="flex gap-3 justify-center">
+        <button onClick={onConfirm} className="px-5 py-2 rounded-xl text-white text-sm font-semibold bg-red-500">Supprimer</button>
+        <button onClick={onCancel} className="px-5 py-2 rounded-xl text-sm border text-gray-600 bg-white">Annuler</button>
+      </div>
+    </div>
+  </div>;
+}
+
+function SearchBar({value,onChange,placeholder}){
+  return <div className="relative flex-1">
+    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+    <input value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder||"Rechercher..."} className="border border-gray-200 rounded-xl pl-8 pr-3 py-2 text-sm w-full focus:outline-none focus:border-purple-400 bg-white"/>
+    {value&&<button onClick={()=>onChange("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">✕</button>}
+  </div>;
+}
+
+function FileUploadArea({metas,onChange,maxFiles=20,label}){
+  var ref=useRef();
+  function handleFiles(files){ var cur=metas||[]; var newM=Array.from(files).slice(0,maxFiles-cur.length).map(storeFile); onChange(cur.concat(newM)); }
+  function remove(idx){ onChange((metas||[]).filter((_,i)=>i!==idx)); }
+  return <div>
+    <div className="border-2 border-dashed border-purple-200 rounded-xl p-3 text-center cursor-pointer hover:border-purple-400 bg-purple-50/30 mb-2" onClick={()=>ref.current.click()}>
+      <div className="text-xl mb-0.5">☁️</div>
+      <div className="text-xs text-gray-500">{label||"Ajouter des documents"} (max {maxFiles})</div>
+    </div>
+    {(metas||[]).length>0&&<div className="space-y-1">{(metas||[]).map((m,i)=>{
+      var hasFile=!!getFile(m.id);
+      return <div key={m.id} className={"flex items-center gap-2 text-xs rounded-lg px-2 py-1 border "+(hasFile?"bg-purple-50 border-purple-100":"bg-orange-50 border-orange-200")}>
+        <span>{hasFile?"📄":"⚠️"}</span>
+        <span className={"font-medium truncate flex-1 "+(hasFile?"text-purple-700":"text-orange-600")}>{m.name}</span>
+        {!hasFile&&<span className="text-orange-500">non chargé</span>}
+        <button onClick={()=>remove(i)} className="text-red-400">✕</button>
+      </div>;
+    })}</div>}
+    <input ref={ref} type="file" accept=".pdf,.doc,.docx,.txt" multiple className="hidden" onChange={e=>{handleFiles(e.target.files);e.target.value="";}}/>
+  </div>;
+}
+
+function exportAsTxt(text,filename){ var b=new Blob([text],{type:"text/plain;charset=utf-8"}); var u=URL.createObjectURL(b); var a=document.createElement("a"); a.href=u; a.download=filename+".txt"; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); }
+function exportAsHtml(text,filename){ var e=text.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); var h=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>${filename}</title><style>body{font-family:Arial,sans-serif;max-width:800px;margin:40px auto;padding:20px;line-height:1.7}pre{white-space:pre-wrap;font-family:inherit}</style></head><body><h1>${filename}</h1><pre>${e}</pre></body></html>`; var b=new Blob([h],{type:"text/html;charset=utf-8"}); var u=URL.createObjectURL(b); var a=document.createElement("a"); a.href=u; a.download=filename+".html"; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u); }
+function copyToClipboard(text){ try{ if(navigator.clipboard)navigator.clipboard.writeText(text).catch(()=>fallbackCopy(text)); else fallbackCopy(text); }catch(e){ fallbackCopy(text); } }
+function fallbackCopy(text){ var t=document.createElement("textarea"); t.value=text; t.style.position="fixed"; t.style.opacity="0"; document.body.appendChild(t); t.select(); document.execCommand("copy"); document.body.removeChild(t); }
+
+function App(){
+  var [ready,setReady]=useState(false);
+  var [page,setPage]=useState("dashboard");
+  var [aos,setAos]=useState(INIT_AOS);
+  var [lots,setLots]=useState(INIT_LOTS);
+  var [entreprises,setEntreprises]=useState(INIT_ENTS);
+  var [filterStatut,setFilterStatut]=useState("Tous");
+  var [selectedAoId,setSelectedAoId]=useState(null);
+  var [showAddAo,setShowAddAo]=useState(false);
+  var [newAo,setNewAo]=useState({titre:"",client:"",budget:"",deadline:"",secteur:"",description:""});
+  var [aiMode,setAiMode]=useState("analyse");
+  var [aiAoId,setAiAoId]=useState("");
+  var [aiConfigs,setAiConfigs]=useState({});
+  var [aiResult,setAiResult]=useState("");
+  var [aiLoading,setAiLoading]=useState(false);
+  var [copiedResult,setCopiedResult]=useState(false);
+  var [memoireTab,setMemoireTab]=useState("mandataire");
+  var [prixTab,setPrixTab]=useState("dpgf");
+  var [generations,setGenerations]=useState({});
+  var [showGenHistory,setShowGenHistory]=useState(false);
+  var [instructions,setInstructions]=useState({analyse:[],memoire:[],dc1:[],dc2:[],prix:[]});
+  var [instrMode,setInstrMode]=useState("memoire");
+  var [newInstr,setNewInstr]=useState({titre:"",contenu:""});
+  var [showAddInstr,setShowAddInstr]=useState(false);
+  var [showAddLot,setShowAddLot]=useState(false);
+  var [newLot,setNewLot]=useState({nom:"",mandataireId:"",cocontractantIds:[],aoId:""});
+  var [expandedLot,setExpandedLot]=useState(null);
+  var [addingDocLot,setAddingDocLot]=useState(null);
+  var [newDocTypeLot,setNewDocTypeLot]=useState("Kbis");
+  var [showAddEnt,setShowAddEnt]=useState(false);
+  var [expandedEnt,setExpandedEnt]=useState(null);
+  var [editingEnt,setEditingEnt]=useState(null);
+  var [newEnt,setNewEnt]=useState({nom:"",siret:"",forme:"",adresse:"",activite:"",effectif:"",ca:"",certifications:"",references:""});
+  var [sidebarOpen,setSidebarOpen]=useState(true);
+  var [confirm,setConfirm]=useState(null);
+  var [showNotif,setShowNotif]=useState(false);
+  var [searchEnt,setSearchEnt]=useState("");
+  var [searchLot,setSearchLot]=useState("");
+  var [filterLotAo,setFilterLotAo]=useState("");
+  var [showExportMenu,setShowExportMenu]=useState(false);
+  var aiCancelledRef=useRef(false);
+  var docLotRef=useRef();
+
+  useEffect(()=>{
+    var d=lsGet("data"); var cfg=lsGet("configs"); var gen=lsGet("generations"); var instr=lsGet("instructions");
+    if(d){ if(d.aos)setAos(d.aos); if(d.lots)setLots(d.lots.map(l=>Object.assign({aoId:""},l))); if(d.entreprises)setEntreprises(d.entreprises.map(e=>Object.assign({},e,{docs:Object.assign({kbis:null,assurance:null,qualification:null,reference1:null,reference2:null,reference3:null,activite:null,bilan:null,attestation:null,autres:null},e.docs||{})}))); }
+    if(cfg)setAiConfigs(cfg); if(gen)setGenerations(gen); if(instr)setInstructions(instr);
+    setReady(true);
+  },[]);
+  useEffect(()=>{ if(!ready)return; lsSet("data",{aos,lots,entreprises}); },[aos,lots,entreprises,ready]);
+  useEffect(()=>{ if(!ready)return; lsSet("configs",aiConfigs); },[aiConfigs,ready]);
+  useEffect(()=>{ if(!ready)return; lsSet("generations",generations); },[generations,ready]);
+  useEffect(()=>{ if(!ready)return; lsSet("instructions",instructions); },[instructions,ready]);
+
+  if(!ready) return <div className="flex h-screen items-center justify-center"><div className="text-center"><div className="text-4xl mb-3">🏆</div><div className="text-gray-600">Chargement...</div></div></div>;
+
+  function askConfirm(msg,cb){ setConfirm({msg,onConfirm:cb}); }
+  function getConfig(){ return Object.assign({},defaultAiConfig(),aiConfigs[aiAoId]||{}); }
+  function setConfig(upd){ setAiConfigs(prev=>{ var cur=Object.assign({},defaultAiConfig(),prev[aiAoId]||{}); var next=typeof upd==="function"?upd(cur):upd; return Object.assign({},prev,{[aiAoId]:next}); }); }
+  function setAnalyseField(f,v){ setConfig(c=>Object.assign({},c,{analyse:Object.assign({},c.analyse,{[f]:v})})); }
+  function setMemoireGlobal(v){ setConfig(c=>Object.assign({},c,{memoire:Object.assign({},c.memoire,{globalPrompt:v})})); }
+  function setMemoireTabField(tab,f,v){ setConfig(c=>Object.assign({},c,{memoire:Object.assign({},c.memoire,{[tab]:Object.assign({},c.memoire[tab],{[f]:v})})})); }
+  function setDcField(mode,f,v){ setConfig(c=>Object.assign({},c,{[mode]:Object.assign({},c[mode],{[f]:v})})); }
+  function setPrixField(tab,f,v){ setConfig(c=>Object.assign({},c,{prix:Object.assign({},c.prix,{[tab]:Object.assign({},c.prix[tab],{[f]:v})})})); }
+  var cfg=getConfig();
+
+  function buildEntCtx(entId){ var e=entreprises.find(x=>x.id===Number(entId)); if(!e)return ""; return "\n"+e.nom+" | "+e.forme+" | SIRET: "+e.siret+"\nActivite: "+e.activite+" | Effectif: "+e.effectif+" | CA: "+e.ca+"\nCertifications: "+e.certifications+"\nReferences: "+e.references; }
+  function saveGeneration(mode,text){ var entry={id:Date.now(),date:new Date().toISOString(),mode,text}; setGenerations(prev=>{ var aoGens=Object.assign({},prev[aiAoId]||{}); var mg=(aoGens[mode]||[]).slice(); mg.unshift(entry); aoGens[mode]=mg.slice(0,10); return Object.assign({},prev,{[aiAoId]:aoGens}); }); }
+
+  function buildPromptText(){
+    var ao=aos.find(a=>a.id===Number(aiAoId)); var aoInfo=ao?("AO: "+ao.titre+" | Client: "+ao.client+"\n"+ao.description):"";
+    if(aiMode==="analyse") return "Analyse cet appel d'offres.\n"+aoInfo+"\n1.RESUME 2.EXIGENCES 3.CRITERES 4.VIGILANCE 5.RECOMMANDATIONS"+(cfg.analyse.prompt?"\n\n"+cfg.analyse.prompt:"");
+    if(aiMode==="memoire"){
+      var md=cfg.memoire; var lines=["Tu es expert en marches publics. Redige un memoire technique professionnel.",aoInfo];
+      [["mandataire","MANDATAIRE"],["coco1","CO-CONTRACTANT 1"],["coco2","CO-CONTRACTANT 2"]].forEach(([tk,tl])=>{ if(md[tk]&&(md[tk].entId||md[tk].prompt)){lines.push("=== "+tl+" ==="+buildEntCtx(md[tk].entId));if(md[tk].prompt)lines.push(md[tk].prompt);} });
+      lines.push("STRUCTURE: 1.Presentation 2.Comprehension 3.Methodologie 4.Moyens humains 5.Moyens materiels 6.Planning 7.Qualite 8.Risques");
+      if(md.globalPrompt)lines.push(md.globalPrompt); return lines.join("\n");
+    }
+    if(aiMode==="prix"){ var pp={dpgf:"Genere une DPGF complete en tableau.",bpu:"Genere un BPU complet.",dqe:"Genere une DQE complete.",gantt:"Genere un planning Gantt en tableau markdown."}; return (pp[prixTab]||pp.dpgf)+(cfg.prix[prixTab].prompt?"\n\n"+cfg.prix[prixTab].prompt:""); }
+    if(aiMode==="dc1") return "Genere un DC1 officiel francais."+(cfg.dc1.prompt?"\n\n"+cfg.dc1.prompt:"")+(cfg.dc1.entIds||[]).map(buildEntCtx).join("");
+    if(aiMode==="dc2") return "Genere un DC2 officiel francais."+(cfg.dc2.prompt?"\n\n"+cfg.dc2.prompt:"")+(cfg.dc2.entIds||[]).map(buildEntCtx).join("");
+    return "";
+  }
+
+  async function generateAI(){
+    aiCancelledRef.current=false; setAiLoading(true); setAiResult("Génération en cours..."); setCopiedResult(false);
+    var promptText=buildPromptText();
+    var contentParts=[];
+    var docMetas=aiMode==="analyse"?(cfg.analyse.docMetas||[]):aiMode==="memoire"?[...cfg.memoire.mandataire.docMetas||[],...cfg.memoire.coco1.docMetas||[],...cfg.memoire.coco2.docMetas||[]]:aiMode==="prix"?(cfg.prix[prixTab].docMetas||[]):(cfg[aiMode]&&cfg[aiMode].docMetas||[]);
+    for(var j=0;j<Math.min(docMetas.length,10);j++){
+      if(aiCancelledRef.current){setAiResult("Annulé.");setAiLoading(false);return;}
+      var meta=docMetas[j]; var file=getFile(meta.id); if(!file)continue;
+      try{ if(file.type==="application/pdf"){var b64=await readFileAsBase64(file);contentParts.push({type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}});}
+      else{var txt=await readFileAsText(file);contentParts.push({type:"text",text:"--- "+meta.name+" ---\n"+txt.slice(0,6000)});} }catch(fe){}
+    }
+    contentParts.push({type:"text",text:promptText});
+    if(aiCancelledRef.current){setAiResult("Annulé.");setAiLoading(false);return;}
+    try{
+      var ctrl=new AbortController(); var timer=setTimeout(()=>ctrl.abort(),60000);
+      var resp=await fetch("/api/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:promptText,mode:aiMode,maxTokens:aiMode==="memoire"?4096:2048}),signal:ctrl.signal});
+      clearTimeout(timer);
+      if(aiCancelledRef.current){setAiResult("Annulé.");setAiLoading(false);return;}
+      var data=await resp.json();
+      if(data.result){setAiResult(data.result);saveGeneration(aiMode==="prix"?prixTab:aiMode,data.result);setAiLoading(false);return;}
+      throw new Error(data.error||"Erreur inconnue");
+    }catch(err){
+      if(aiCancelledRef.current){setAiResult("Annulé.");setAiLoading(false);return;}
+      setAiResult("⚠️ Erreur : "+err.message+"\n\n━━━ PROMPT PRÊT À COLLER ━━━\nCollez dans une nouvelle conversation Claude.ai :\n\n"+promptText);
+    }
+    setAiLoading(false);
+  }
+
+  function deleteAo(id){ askConfirm("Supprimer cet AO ?",()=>setAos(prev=>prev.filter(a=>a.id!==id))); }
+  function duplicateAo(a){ setAos(prev=>prev.concat([Object.assign({},a,{id:Date.now(),titre:a.titre+" (copie)",statut:"En cours"})])); }
+  function deleteLot(id){ askConfirm("Supprimer ce lot ?",()=>setLots(prev=>prev.filter(l=>l.id!==id))); }
+  function deleteEnt(id){ askConfirm("Supprimer cette entreprise ?",()=>setEntreprises(prev=>prev.filter(e=>e.id!==id))); }
+  function updateStatut(id,s){ setAos(prev=>prev.map(a=>a.id===id?Object.assign({},a,{statut:s}):a)); }
+  function addAo(){ if(!newAo.titre||!newAo.client)return; setAos(prev=>prev.concat([Object.assign({},newAo,{id:Date.now(),statut:"En cours",cloudUrl:""})])); setNewAo({titre:"",client:"",budget:"",deadline:"",secteur:"",description:""}); setShowAddAo(false); }
+  function addLot(){ if(!newLot.nom)return; setLots(prev=>prev.concat([{id:Date.now(),nom:newLot.nom,mandataireId:newLot.mandataireId?Number(newLot.mandataireId):null,cocontractantIds:newLot.cocontractantIds.map(Number),docs:[],cloudUrl:"",aoId:newLot.aoId}])); setNewLot({nom:"",mandataireId:"",cocontractantIds:[],aoId:""}); setShowAddLot(false); }
+  function addEnt(){ if(!newEnt.nom)return; setEntreprises(prev=>prev.concat([Object.assign({},newEnt,{id:Date.now(),couleur:ENT_COLORS[prev.length%ENT_COLORS.length],cloudUrl:"",docs:{kbis:null,assurance:null,qualification:null,reference1:null,reference2:null,reference3:null,activite:null,bilan:null,attestation:null,autres:null}})])); setNewEnt({nom:"",siret:"",forme:"",adresse:"",activite:"",effectif:"",ca:"",certifications:"",references:""}); setShowAddEnt(false); }
+  function saveEnt(){ setEntreprises(prev=>prev.map(e=>e.id===editingEnt.id?editingEnt:e)); setEditingEnt(null); }
+  function addInstruction(){ if(!newInstr.titre||!newInstr.contenu)return; setInstructions(prev=>Object.assign({},prev,{[instrMode]:(prev[instrMode]||[]).concat([{id:Date.now(),titre:newInstr.titre,contenu:newInstr.contenu}])})); setNewInstr({titre:"",contenu:""}); setShowAddInstr(false); }
+  function deleteInstruction(mode,id){ setInstructions(prev=>Object.assign({},prev,{[mode]:(prev[mode]||[]).filter(i=>i.id!==id)})); }
+  function applyInstruction(instr){
+    if(aiMode==="analyse")setAnalyseField("prompt",(cfg.analyse.prompt?cfg.analyse.prompt+"\n\n":"")+instr.contenu);
+    else if(aiMode==="memoire")setMemoireGlobal((cfg.memoire.globalPrompt?cfg.memoire.globalPrompt+"\n\n":"")+instr.contenu);
+    else if(aiMode==="dc1"||aiMode==="dc2")setDcField(aiMode,"prompt",(cfg[aiMode].prompt?cfg[aiMode].prompt+"\n\n":"")+instr.contenu);
+    else if(aiMode==="prix")setPrixField(prixTab,"prompt",(cfg.prix[prixTab].prompt?cfg.prix[prixTab].prompt+"\n\n":"")+instr.contenu);
+  }
+
+  var stats={total:aos.length,enCours:aos.filter(a=>a.statut==="En cours").length,envoyes:aos.filter(a=>a.statut==="Envoyé").length,tauxSucces:aos.length?Math.round(aos.filter(a=>a.statut==="Gagné").length/aos.length*100):0};
+  var now=new Date(); var soon14=aos.filter(a=>{var d=(new Date(a.deadline)-now)/86400000;return d>=0&&d<=14;});
+  var aoGens=generations[aiAoId]||{}; var currentGenKey=aiMode==="prix"?prixTab:aiMode; var currentHistory=aoGens[currentGenKey]||[];
+  var inp="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-purple-400 w-full bg-white";
+  var filteredEnts=entreprises.filter(e=>{var q=searchEnt.toLowerCase();return !q||e.nom.toLowerCase().includes(q)||(e.activite||"").toLowerCase().includes(q)||(e.siret||"").includes(q);});
+  var filteredLots=lots.filter(l=>{var q=searchLot.toLowerCase();return (!q||l.nom.toLowerCase().includes(q))&&(!filterLotAo||String(l.aoId)===filterLotAo);});
+  var navItems=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"aos",label:"Appels d'offres",icon:"📁"},{id:"redaction",label:"Rédaction IA",icon:"✍️"},{id:"suivi",label:"Suivi Kanban",icon:"📌"},{id:"lots",label:"Dossiers Lots",icon:"📦"},{id:"entreprises",label:"Références",icon:"🏗️"},{id:"instructions",label:"Instructions",icon:"📚"}];
+
+  return (
+    <div className="flex h-screen bg-gray-50 overflow-hidden" style={{fontFamily:"system-ui,sans-serif"}}>
+      {confirm&&<ConfirmDialog msg={confirm.msg} onConfirm={()=>{confirm.onConfirm();setConfirm(null);}} onCancel={()=>setConfirm(null)}/>}
+
+      {/* SIDEBAR */}
+      <div className={"flex-shrink-0 flex flex-col transition-all duration-200 "+(sidebarOpen?"w-52":"w-14")} style={{background:GRADIENT}}>
+        <div className="p-3 pb-2 flex items-center justify-between">
+          {sidebarOpen&&<div><div className="text-white font-bold text-sm">🏆 MagescoPro</div><div className="text-blue-200 text-xs mt-0.5">Gestion AO</div></div>}
+          <button onClick={()=>setSidebarOpen(!sidebarOpen)} className="text-white/70 hover:text-white text-lg ml-auto">{sidebarOpen?"◀":"▶"}</button>
+        </div>
+        <nav className="flex-1 px-2 py-1 space-y-0.5">
+          {navItems.map(n=>(
+            <button key={n.id} onClick={()=>setPage(n.id)} className={"w-full text-left px-2 py-2 rounded-xl text-xs font-medium flex items-center gap-2 transition-all "+(page===n.id?"bg-white text-purple-700 shadow":"text-white hover:bg-white/20")} title={!sidebarOpen?n.label:""}>
+              <span className="text-base flex-shrink-0">{n.icon}</span>
+              {sidebarOpen&&<span>{n.label}</span>}
+            </button>
+          ))}
+        </nav>
+        {sidebarOpen&&<div className="p-3 text-xs text-blue-200">{new Date().toLocaleDateString("fr-FR")}</div>}
+      </div>
+
+      {/* MAIN */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="bg-white border-b px-5 py-3 flex items-center justify-between shadow-sm">
+          <h1 className="text-base font-bold text-gray-800">{(navItems.find(n=>n.id===page)||{}).label}</h1>
+          <div className="flex items-center gap-3">
+            {soon14.length>0&&<span className="bg-orange-100 text-orange-700 text-xs font-semibold px-3 py-1 rounded-full">🔔 {soon14.length} échéance(s)</span>}
+            <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold" style={{background:GRADIENT}}>M</div>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+
+          {/* DASHBOARD */}
+          {page==="dashboard"&&(
+            <div>
+              <div className="grid grid-cols-4 gap-3 mb-5">
+                {[{label:"Total AO",val:stats.total,color:"#6c3de8",bg:"#f3eeff",icon:"📁"},{label:"En cours",val:stats.enCours,color:"#3b82f6",bg:"#eff6ff",icon:"🔄"},{label:"Envoyés",val:stats.envoyes,color:"#f59e0b",bg:"#fffbeb",icon:"📤"},{label:"Taux succès",val:stats.tauxSucces+"%",color:"#10b981",bg:"#ecfdf5",icon:"🏆"}].map(c=>(
+                  <div key={c.label} className="rounded-2xl p-4 shadow-sm flex items-center gap-3" style={{background:c.bg}}>
+                    <div className="text-3xl">{c.icon}</div>
+                    <div><div className="text-2xl font-bold" style={{color:c.color}}>{c.val}</div><div className="text-xs text-gray-500">{c.label}</div></div>
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+                  <h2 className="font-semibold text-gray-700 mb-3 text-sm">📋 Derniers AO</h2>
+                  {aos.slice(0,5).map(a=>(
+                    <div key={a.id} className="flex items-center justify-between p-2 rounded-xl bg-gray-50 mb-1.5 border border-gray-100 cursor-pointer" onClick={()=>{setPage("aos");setSelectedAoId(a.id);}}>
+                      <div className="min-w-0 flex-1 mr-2"><div className="text-sm font-medium truncate">{a.titre}</div><div className="text-xs text-gray-400">{a.client}</div></div>
+                      <span className={"text-xs font-semibold px-2 py-0.5 rounded-full "+STATUT_COLORS[a.statut]}>{a.statut}</span>
+                    </div>
+                  ))}
+                  {aos.length===0&&<div className="text-xs text-gray-400 text-center py-4">Aucun AO — allez dans "Appels d'offres" pour en créer</div>}
+                </div>
+                <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
+                  <h2 className="font-semibold text-gray-700 mb-2 text-sm">📊 Statuts</h2>
+                  {STATUTS.map(s=>{ var pct=aos.length?Math.round(aos.filter(a=>a.statut===s).length/aos.length*100):0; var col=s==="Gagné"?"#10b981":s==="Perdu"?"#ef4444":s==="Envoyé"?"#f59e0b":"#6c3de8"; return (
+                    <div key={s} className="mb-2"><div className="flex justify-between text-xs mb-0.5"><span>{s}</span><span style={{color:col}} className="font-semibold">{pct}%</span></div><div className="h-1.5 bg-gray-100 rounded-full"><div className="h-1.5 rounded-full" style={{width:pct+"%",background:col}}></div></div></div>
+                  );})}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* AOS */}
+          {page==="aos"&&(
+            <div>
+              <div className="flex justify-between items-center mb-4 flex-wrap gap-2">
+                <div className="flex gap-2 flex-wrap">{["Tous",...STATUTS].map(s=><button key={s} onClick={()=>setFilterStatut(s)} className={"px-3 py-1 rounded-full text-sm font-medium border transition-all "+(filterStatut===s?"text-white border-transparent":"bg-white text-gray-600 border-gray-200")} style={filterStatut===s?{background:GRADIENT}:{}}>{s}</button>)}</div>
+                <button onClick={()=>setShowAddAo(true)} className="px-4 py-2 rounded-xl text-white text-sm font-semibold shadow" style={{background:GRADIENT}}>+ Nouvel AO</button>
+              </div>
+              {showAddAo&&(
+                <div className="bg-white rounded-2xl shadow p-4 mb-4 border border-purple-100">
+                  <h3 className="font-bold text-gray-700 mb-3 text-sm">Ajouter un AO</h3>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    {[["titre","Titre *"],["client","Client *"],["budget","Budget"],["secteur","Secteur"]].map(([k,l])=><input key={k} placeholder={l} value={newAo[k]} onChange={e=>setNewAo(Object.assign({},newAo,{[k]:e.target.value}))} className={inp}/>)}
+                    <input type="date" value={newAo.deadline} onChange={e=>setNewAo(Object.assign({},newAo,{deadline:e.target.value}))} className={inp}/>
+                  </div>
+                  <textarea placeholder="Description" value={newAo.description} onChange={e=>setNewAo(Object.assign({},newAo,{description:e.target.value}))} className={inp+" mb-3"} rows={2}/>
+                  <div className="flex gap-2"><button onClick={addAo} className="px-4 py-2 rounded-xl text-white text-sm font-semibold" style={{background:GRADIENT}}>Ajouter</button><button onClick={()=>setShowAddAo(false)} className="px-4 py-2 rounded-xl text-sm text-gray-500 border bg-white">Annuler</button></div>
+                </div>
+              )}
+              <div className="space-y-3">
+                {aos.filter(a=>filterStatut==="Tous"||a.statut===filterStatut).map(a=>(
+                  <div key={a.id} className="bg-white rounded-2xl shadow-sm p-4 border border-gray-100 hover:shadow-md transition-shadow cursor-pointer" onClick={()=>setSelectedAoId(selectedAoId===a.id?null:a.id)}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap"><span className="font-semibold text-gray-800">{a.titre}</span><span className={"text-xs font-semibold px-2 py-0.5 rounded-full "+STATUT_COLORS[a.statut]}>{a.statut}</span></div>
+                        <div className="text-sm text-gray-500 flex gap-3 flex-wrap"><span>🏢 {a.client}</span>{a.budget&&<span>💰 {a.budget}</span>}{a.deadline&&<span>📅 {new Date(a.deadline).toLocaleDateString("fr-FR")}</span>}</div>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0" onClick={e=>e.stopPropagation()}>
+                        <select value={a.statut} onChange={e=>updateStatut(a.id,e.target.value)} className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white">{STATUTS.map(s=><option key={s}>{s}</option>)}</select>
+                        <button onClick={()=>{setAiMode("analyse");setAiAoId(String(a.id));setPage("redaction");}} className="text-xs px-2 py-1 rounded-lg text-white" style={{background:GRADIENT}}>✍️ IA</button>
+                        <button onClick={()=>duplicateAo(a)} className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-500">⧉</button>
+                        <button onClick={()=>deleteAo(a.id)} className="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-400">🗑</button>
+                      </div>
+                    </div>
+                    {selectedAoId===a.id&&<div className="mt-3 pt-3 border-t text-sm text-gray-600">{a.description||"Aucune description."}</div>}
+                  </div>
+                ))}
+                {aos.filter(a=>filterStatut==="Tous"||a.statut===filterStatut).length===0&&<div className="text-center py-10 text-gray-400 text-sm">Aucun AO{filterStatut!=="Tous"?" pour ce statut":""}.</div>}
+              </div>
+            </div>
+          )}
+
+          {/* REDACTION IA */}
+          {page==="redaction"&&(
+            <div className="max-w-3xl">
+              <div className="bg-white rounded-2xl shadow-sm p-4 mb-4 border border-purple-100">
+                <label className="text-xs font-semibold text-gray-700 mb-1 block">📁 Appel d'offres <span className="text-red-500">*</span></label>
+                <select value={aiAoId} onChange={e=>{setAiAoId(e.target.value);setAiResult("");}} className={inp}>
+                  <option value="">— Sélectionner un AO —</option>
+                  {aos.map(a=><option key={a.id} value={String(a.id)}>{a.titre} · {a.client}</option>)}
+                </select>
+                {aiAoId&&<div className="text-xs text-green-600 mt-1">✅ Configuration sauvegardée automatiquement.</div>}
+              </div>
+              <div className="flex gap-2 mb-4 flex-wrap">
+                {[{id:"analyse",label:"📋 Analyse"},{id:"memoire",label:"📝 Mémoire"},{id:"dc1",label:"📄 DC1"},{id:"dc2",label:"📄 DC2"},{id:"prix",label:"💰 Prix"}].map(m=>(
+                  <button key={m.id} onClick={()=>{setAiMode(m.id);setAiResult("");setShowGenHistory(false);}} className={"px-4 py-2 rounded-xl text-sm font-semibold border transition-all "+(aiMode===m.id?"text-white border-transparent shadow":"bg-white text-gray-600 border-gray-200")} style={aiMode===m.id?{background:GRADIENT}:{}}>{m.label}</button>
+                ))}
+              </div>
+              {aiAoId&&(instructions[aiMode==="prix"?"prix":aiMode]||[]).length>0&&(
+                <div className="bg-blue-50 border border-blue-100 rounded-2xl p-3 mb-4">
+                  <div className="text-xs font-semibold text-blue-700 mb-2">📚 Instructions sauvegardées</div>
+                  <div className="flex flex-wrap gap-2">{(instructions[aiMode==="prix"?"prix":aiMode]||[]).map(instr=><button key={instr.id} onClick={()=>applyInstruction(instr)} className="text-xs px-3 py-1.5 rounded-lg bg-white border border-blue-200 text-blue-700 hover:bg-blue-100">+ {instr.titre}</button>)}</div>
+                </div>
+              )}
+              {aiMode==="analyse"&&(
+                <div className="bg-white rounded-2xl shadow-sm p-5 mb-4 border border-purple-100">
+                  <h2 className="font-bold text-gray-700 mb-4 text-sm">📋 Analyse AO</h2>
+                  <div className="mb-3"><label className="text-xs font-semibold text-gray-700 mb-1 block">📎 Documents</label><FileUploadArea metas={cfg.analyse.docMetas} onChange={v=>setAnalyseField("docMetas",v)}/></div>
+                  <label className="text-xs font-semibold text-gray-700 mb-1 block">Instructions</label>
+                  <textarea value={cfg.analyse.prompt} onChange={e=>setAnalyseField("prompt",e.target.value)} rows={3} placeholder="Ex : Focus sur les critères d'attribution..." className={inp}/>
+                </div>
+              )}
+              {aiMode==="memoire"&&(
+                <div>
+                  <div className="bg-white rounded-2xl shadow-sm p-4 mb-3 border border-purple-100">
+                    <label className="text-xs font-semibold text-gray-700 mb-1 block">📝 Instructions générales</label>
+                    <textarea value={cfg.memoire.globalPrompt} onChange={e=>setMemoireGlobal(e.target.value)} rows={3} placeholder="Ex : Approche agile, expérience secteur public..." className={inp}/>
+                  </div>
+                  <div className="bg-white rounded-2xl shadow-sm border border-purple-100 mb-4 overflow-hidden">
+                    <div className="flex border-b border-gray-100">{MEMOIRE_TABS.map(t=><button key={t.id} onClick={()=>setMemoireTab(t.id)} className={"flex-1 px-3 py-3 text-xs font-semibold transition-all "+(memoireTab===t.id?"text-purple-700 border-b-2 border-purple-600 bg-purple-50":"text-gray-500 hover:bg-gray-50")}>{t.label}{cfg.memoire[t.id].entId&&<span className="ml-1 text-green-500">✓</span>}</button>)}</div>
+                    {MEMOIRE_TABS.map(t=>{ if(memoireTab!==t.id)return null; var td=cfg.memoire[t.id]; var se=entreprises.find(e=>e.id===Number(td.entId)); return (
+                      <div key={t.id} className="p-5">
+                        <div className="mb-3"><label className="text-xs font-semibold text-gray-700 mb-1 block">Entreprise</label><select value={td.entId} onChange={e=>setMemoireTabField(t.id,"entId",e.target.value)} className={inp}><option value="">— Sélectionner —</option>{entreprises.map(e=><option key={e.id} value={String(e.id)}>{e.nom}</option>)}</select>{se&&<div className="mt-2 flex items-center gap-2 p-2 bg-purple-50 rounded-xl border border-purple-100"><Avatar nom={se.nom} couleur={se.couleur} size={7}/><div><div className="text-sm font-semibold">{se.nom}</div><div className="text-xs text-gray-400">{se.forme} · {se.ca}</div></div></div>}</div>
+                        <div className="mb-3"><label className="text-xs font-semibold text-gray-700 mb-1 block">📎 Documents</label><FileUploadArea metas={td.docMetas} onChange={v=>setMemoireTabField(t.id,"docMetas",v)}/></div>
+                        <textarea value={td.prompt} onChange={e=>setMemoireTabField(t.id,"prompt",e.target.value)} rows={2} placeholder="Instructions spécifiques..." className={inp}/>
+                      </div>
+                    );})}
+                  </div>
+                </div>
+              )}
+              {aiMode==="prix"&&(
+                <div className="bg-white rounded-2xl shadow-sm border border-purple-100 mb-4 overflow-hidden">
+                  <div className="flex border-b border-gray-100">{PRIX_TABS.map(t=><button key={t.id} onClick={()=>{setPrixTab(t.id);setAiResult("");}} className={"flex-1 px-2 py-3 text-xs font-semibold transition-all "+(prixTab===t.id?"text-purple-700 border-b-2 border-purple-600 bg-purple-50":"text-gray-500 hover:bg-gray-50")}>{t.label}</button>)}</div>
+                  <div className="p-4">
+                    <div className="mb-3"><label className="text-xs font-semibold text-gray-700 mb-1 block">📎 Fichiers</label><FileUploadArea metas={cfg.prix[prixTab].docMetas} onChange={v=>setPrixField(prixTab,"docMetas",v)} maxFiles={5}/></div>
+                    <textarea value={cfg.prix[prixTab].prompt} onChange={e=>setPrixField(prixTab,"prompt",e.target.value)} rows={3} placeholder="Ex : Projet 18 mois..." className={inp}/>
+                  </div>
+                </div>
+              )}
+              {(aiMode==="dc1"||aiMode==="dc2")&&(
+                <div className="bg-white rounded-2xl shadow-sm p-5 mb-4 border border-purple-100">
+                  <h2 className="font-bold text-gray-700 mb-4 text-sm">📄 {aiMode==="dc1"?"DC1 – Lettre de candidature":"DC2 – Déclaration du candidat"}</h2>
+                  <div className="mb-3"><label className="text-xs font-semibold text-gray-700 mb-2 block">Entreprises</label><div className="grid grid-cols-2 gap-2">{entreprises.map(e=>{ var sel=(cfg[aiMode].entIds||[]).includes(e.id); return <div key={e.id} onClick={()=>{var ids=cfg[aiMode].entIds||[];setDcField(aiMode,"entIds",sel?ids.filter(x=>x!==e.id):[...ids,e.id]);}} className={"cursor-pointer rounded-xl p-2 border-2 flex items-center gap-2 "+(sel?"border-purple-400 bg-purple-50":"border-gray-200 bg-white")}><Avatar nom={e.nom} couleur={e.couleur} size={6}/><span className="text-sm flex-1 truncate">{e.nom}</span>{sel&&<span className="text-purple-600">✓</span>}</div>; })}</div></div>
+                  <div className="mb-3"><FileUploadArea metas={cfg[aiMode].docMetas} onChange={v=>setDcField(aiMode,"docMetas",v)}/></div>
+                  <textarea value={cfg[aiMode].prompt} onChange={e=>setDcField(aiMode,"prompt",e.target.value)} rows={2} placeholder="Instructions..." className={inp}/>
+                </div>
+              )}
+              <div className="flex gap-3 mb-4 flex-wrap items-center">
+                {!aiLoading&&aiAoId&&<button onClick={generateAI} className="px-6 py-3 rounded-xl text-white font-semibold shadow" style={{background:GRADIENT}}>✨ Générer</button>}
+                {!aiLoading&&aiAoId&&<button onClick={()=>{var p=buildPromptText();setAiResult("━━━ PROMPT À COLLER DANS CLAUDE.AI ━━━\n\n"+p);setCopiedResult(false);}} className="px-4 py-3 rounded-xl border-2 border-purple-300 text-purple-600 text-sm bg-white font-medium">📋 Prompt manuel</button>}
+                {aiLoading&&<button onClick={()=>{aiCancelledRef.current=true;setAiLoading(false);setAiResult("Annulé.");}} className="px-4 py-3 rounded-xl border border-red-300 text-red-500 text-sm bg-white">✕ Annuler</button>}
+                {aiLoading&&<span className="text-sm text-gray-500">⏳ Génération en cours...</span>}
+                {currentHistory.length>0&&!aiLoading&&<button onClick={()=>setShowGenHistory(!showGenHistory)} className="px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-600 text-sm">🕓 Historique ({currentHistory.length})</button>}
+                {aiResult&&!aiLoading&&(
+                  <div className="relative">
+                    <button onClick={()=>setShowExportMenu(!showExportMenu)} className="px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-600 text-sm">💾 Exporter ▾</button>
+                    {showExportMenu&&<div className="absolute left-0 top-12 bg-white rounded-xl shadow-xl border border-gray-100 z-10 w-44 overflow-hidden">
+                      <button onClick={()=>{exportAsTxt(aiResult,"resultat_"+currentGenKey);setShowExportMenu(false);}} className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50">📄 Exporter .txt</button>
+                      <button onClick={()=>{exportAsHtml(aiResult,"resultat_"+currentGenKey);setShowExportMenu(false);}} className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50">🌐 Exporter .html</button>
+                      <button onClick={()=>{copyToClipboard(aiResult);setCopiedResult(true);setTimeout(()=>setCopiedResult(false),2000);setShowExportMenu(false);}} className="w-full text-left px-4 py-2.5 text-sm hover:bg-gray-50">📋 Copier</button>
+                    </div>}
+                  </div>
+                )}
+              </div>
+              {!aiAoId&&<div className="text-sm text-orange-500 mb-4">⚠️ Sélectionnez un AO pour activer la génération.</div>}
+              {showGenHistory&&currentHistory.length>0&&(
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 mb-4 overflow-hidden">
+                  <div className="px-4 py-3 border-b flex justify-between items-center"><span className="text-sm font-semibold text-gray-700">🕓 Historique</span><button onClick={()=>setShowGenHistory(false)} className="text-gray-400 text-xs">Fermer</button></div>
+                  {currentHistory.map((gen,idx)=>(
+                    <div key={gen.id} className="p-4 border-b border-gray-50">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs text-gray-500">Version {currentHistory.length-idx} — {new Date(gen.date).toLocaleString("fr-FR")}</span>
+                        <div className="flex gap-2">
+                          <button onClick={()=>{setAiResult(gen.text);setShowGenHistory(false);}} className="text-xs px-2 py-1 rounded-lg border border-purple-200 text-purple-600">Restaurer</button>
+                          <button onClick={()=>exportAsTxt(gen.text,"version_"+(currentHistory.length-idx))} className="text-xs px-2 py-1 rounded-lg border border-gray-200 text-gray-600">💾</button>
+                        </div>
+                      </div>
+                      <pre className="text-xs text-gray-500 whitespace-pre-wrap max-h-20 overflow-hidden">{gen.text.slice(0,200)}...</pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {aiResult&&(
+                <div className="bg-white rounded-2xl shadow-sm p-5 border border-green-100">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="font-semibold text-gray-700 text-sm">📄 Résultat</h3>
+                    <button onClick={()=>{copyToClipboard(aiResult);setCopiedResult(true);setTimeout(()=>setCopiedResult(false),2000);}} className={"text-xs px-3 py-1.5 rounded-lg border transition-all "+(copiedResult?"bg-green-100 border-green-300 text-green-700":"border-purple-200 text-purple-600 hover:bg-purple-50")}>{copiedResult?"✅ Copié !":"📋 Copier"}</button>
+                  </div>
+                  <pre className="text-sm text-gray-700 whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto">{aiResult}</pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* KANBAN */}
+          {page==="suivi"&&(
+            <div className="grid grid-cols-4 gap-3">
+              {STATUTS.map(col=>(
+                <div key={col} className="bg-white rounded-2xl shadow-sm p-3 border border-gray-100">
+                  <div className={"text-xs font-bold px-2 py-1 rounded-full mb-3 inline-block "+STATUT_COLORS[col]}>{col} ({aos.filter(a=>a.statut===col).length})</div>
+                  {aos.filter(a=>a.statut===col).map(a=>(
+                    <div key={a.id} className="p-3 rounded-xl border border-gray-100 bg-gray-50 mb-2">
+                      <div className="text-sm font-semibold mb-0.5">{a.titre}</div>
+                      <div className="text-xs text-gray-400 mb-2">{a.client}</div>
+                      <div className="flex gap-1 flex-wrap">{STATUTS.filter(s=>s!==col).map(s=><button key={s} onClick={()=>updateStatut(a.id,s)} className="text-xs px-2 py-0.5 rounded-full border border-gray-200 text-gray-500 bg-white hover:text-purple-600">→ {s}</button>)}</div>
+                    </div>
+                  ))}
+                  {aos.filter(a=>a.statut===col).length===0&&<div className="text-xs text-gray-300 text-center py-6 border-2 border-dashed border-gray-100 rounded-xl">Vide</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* LOTS */}
+          {page==="lots"&&(
+            <div>
+              <div className="flex justify-between items-center mb-4 gap-2 flex-wrap">
+                <div className="flex gap-2 flex-1 min-w-0">
+                  <SearchBar value={searchLot} onChange={setSearchLot} placeholder="Rechercher un lot..."/>
+                  <select value={filterLotAo} onChange={e=>setFilterLotAo(e.target.value)} className="border border-gray-200 rounded-xl px-3 py-2 text-sm bg-white focus:outline-none flex-shrink-0">
+                    <option value="">Tous les AO</option>
+                    {aos.map(a=><option key={a.id} value={String(a.id)}>{a.titre}</option>)}
+                  </select>
+                </div>
+                <button onClick={()=>setShowAddLot(true)} className="px-4 py-2 rounded-xl text-white text-sm font-semibold shadow flex-shrink-0" style={{background:GRADIENT}}>+ Nouveau lot</button>
+              </div>
+              {showAddLot&&(
+                <div className="bg-white rounded-2xl shadow p-4 mb-4 border border-purple-100">
+                  <h3 className="font-bold text-gray-700 mb-3 text-sm">Créer un lot</h3>
+                  <input placeholder="Nom du lot *" value={newLot.nom} onChange={e=>setNewLot(Object.assign({},newLot,{nom:e.target.value}))} className={inp+" mb-3"}/>
+                  <div className="mb-3"><label className="text-xs font-semibold text-gray-600 mb-1 block">AO associé</label><select value={newLot.aoId} onChange={e=>setNewLot(Object.assign({},newLot,{aoId:e.target.value}))} className={inp}><option value="">— Aucun —</option>{aos.map(a=><option key={a.id} value={String(a.id)}>{a.titre}</option>)}</select></div>
+                  <div className="mb-3"><label className="text-xs font-semibold text-gray-600 mb-1 block">Mandataire</label><select value={newLot.mandataireId} onChange={e=>setNewLot(Object.assign({},newLot,{mandataireId:e.target.value}))} className={inp}><option value="">— Sélectionner —</option>{entreprises.map(e=><option key={e.id} value={e.id}>{e.nom}</option>)}</select></div>
+                  <div className="flex gap-2"><button onClick={addLot} className="px-4 py-2 rounded-xl text-white text-sm font-semibold" style={{background:GRADIENT}}>Créer</button><button onClick={()=>setShowAddLot(false)} className="px-4 py-2 rounded-xl text-sm text-gray-500 border bg-white">Annuler</button></div>
+                </div>
+              )}
+              {filteredLots.length===0&&<div className="text-center py-10 text-gray-400 text-sm">Aucun lot trouvé.</div>}
+              <div className="space-y-3">
+                {filteredLots.map(lot=>{
+                  var mand=entreprises.find(e=>e.id===lot.mandataireId);
+                  var linkedAo=aos.find(a=>String(a.id)===String(lot.aoId));
+                  return (
+                    <div key={lot.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                      <div className="p-4 flex items-center justify-between cursor-pointer" onClick={()=>setExpandedLot(expandedLot===lot.id?null:lot.id)}>
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white text-lg flex-shrink-0" style={{background:GRADIENT}}>📦</div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-semibold text-gray-800">{lot.nom}</div>
+                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                              {linkedAo&&<span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full">📁 {linkedAo.titre}</span>}
+                              {mand&&<span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{background:mand.couleur}}>👑 {mand.nom}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2" onClick={e=>e.stopPropagation()}>
+                          <button onClick={()=>deleteLot(lot.id)} className="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-400">🗑</button>
+                          <span className="text-gray-400">{expandedLot===lot.id?"▲":"▼"}</span>
+                        </div>
+                      </div>
+                      {expandedLot===lot.id&&(
+                        <div className="border-t border-gray-100 p-4">
+                          <div className="mb-3"><label className="text-xs font-semibold text-gray-600 mb-1 block">🔗 AO associé</label><select value={lot.aoId||""} onChange={e=>setLots(prev=>prev.map(l=>l.id===lot.id?Object.assign({},l,{aoId:e.target.value}):l))} className={inp}><option value="">— Aucun —</option>{aos.map(a=><option key={a.id} value={String(a.id)}>{a.titre}</option>)}</select></div>
+                          <button onClick={()=>setAddingDocLot(lot.id)} className="w-full border-2 border-dashed border-gray-200 rounded-xl p-3 text-sm text-gray-500 hover:border-purple-300 mb-3">+ Ajouter un document</button>
+                          {addingDocLot===lot.id&&(
+                            <div className="border border-purple-200 rounded-xl p-3 bg-purple-50/30 mb-3">
+                              <div className="flex gap-2 mb-2"><select value={newDocTypeLot} onChange={e=>setNewDocTypeLot(e.target.value)} className="border border-gray-200 rounded-lg px-2 py-1.5 text-sm flex-1 bg-white">{DOC_TYPES_LOT.map(t=><option key={t}>{t}</option>)}</select><button onClick={()=>setAddingDocLot(null)} className="text-xs text-gray-400 px-2">Annuler</button></div>
+                              <div className="border-2 border-dashed border-purple-300 rounded-xl p-3 text-center cursor-pointer bg-white" onClick={()=>docLotRef.current.click()}><div className="text-xs text-gray-500">📎 Cliquer pour sélectionner</div></div>
+                              <input ref={docLotRef} type="file" className="hidden" onChange={e=>{ var f=e.target.files[0]; if(!f)return; var doc={id:Date.now(),nom:f.name,type:newDocTypeLot,date:new Date().toISOString().slice(0,10),size:(f.size/1024).toFixed(1)+" Ko"}; setLots(prev=>prev.map(l=>l.id===lot.id?Object.assign({},l,{docs:l.docs.concat([doc])}):l)); setAddingDocLot(null); }}/>
+                            </div>
+                          )}
+                          {lot.docs.length>0&&<div className="space-y-2">{lot.docs.map(doc=><div key={doc.id} className="flex items-center justify-between p-2 rounded-xl bg-gray-50 border border-gray-100"><div className="flex items-center gap-2"><span>📄</span><div><div className="text-sm font-medium">{doc.nom}</div><span className="text-xs bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded-full">{doc.type}</span></div></div><button onClick={()=>setLots(prev=>prev.map(l=>l.id===lot.id?Object.assign({},l,{docs:l.docs.filter(d=>d.id!==doc.id)}):l))} className="text-xs text-red-400">✕</button></div>)}</div>}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ENTREPRISES */}
+          {page==="entreprises"&&(
+            <div>
+              <div className="flex justify-between items-center mb-4 gap-2 flex-wrap">
+                <SearchBar value={searchEnt} onChange={setSearchEnt} placeholder="Rechercher par nom, activité, SIRET..."/>
+                <button onClick={()=>setShowAddEnt(true)} className="px-4 py-2 rounded-xl text-white text-sm font-semibold shadow flex-shrink-0" style={{background:GRADIENT}}>+ Nouvelle entreprise</button>
+              </div>
+              {showAddEnt&&(
+                <div className="bg-white rounded-2xl shadow p-5 mb-4 border border-purple-100">
+                  <h3 className="font-bold text-gray-700 mb-3 text-sm">Ajouter une entreprise</h3>
+                  <div className="grid grid-cols-2 gap-3 mb-3">{[["nom","Nom *"],["siret","SIRET"],["forme","Forme"],["adresse","Adresse"],["effectif","Effectif"],["ca","CA"]].map(([k,l])=><input key={k} placeholder={l} value={newEnt[k]} onChange={e=>setNewEnt(Object.assign({},newEnt,{[k]:e.target.value}))} className={inp}/>)}</div>
+                  {[["activite","Activité"],["certifications","Certifications"],["references","Références"]].map(([k,l])=><textarea key={k} placeholder={l} value={newEnt[k]} onChange={e=>setNewEnt(Object.assign({},newEnt,{[k]:e.target.value}))} className={inp+" mb-2"} rows={2}/>)}
+                  <div className="flex gap-2 mt-1"><button onClick={addEnt} className="px-4 py-2 rounded-xl text-white text-sm font-semibold" style={{background:GRADIENT}}>Ajouter</button><button onClick={()=>setShowAddEnt(false)} className="px-4 py-2 rounded-xl text-sm text-gray-500 border bg-white">Annuler</button></div>
+                </div>
+              )}
+              {filteredEnts.length===0&&<div className="text-center py-10 text-gray-400 text-sm">Aucune entreprise trouvée.</div>}
+              <div className="space-y-3">
+                {filteredEnts.map(e=>(
+                  <div key={e.id} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div className="p-4 flex items-center justify-between cursor-pointer" onClick={()=>setExpandedEnt(expandedEnt===e.id?null:e.id)}>
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Avatar nom={e.nom} couleur={e.couleur} size={10}/>
+                        <div className="min-w-0"><div className="font-semibold text-gray-800">{e.nom}</div><div className="text-xs text-gray-400 flex gap-3 mt-0.5">{e.forme&&<span>🏛️ {e.forme}</span>}{e.ca&&<span>💰 {e.ca}</span>}</div></div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <button onClick={ev=>{ev.stopPropagation();setEditingEnt(Object.assign({},e));setExpandedEnt(e.id);}} className="text-xs px-3 py-1 rounded-lg border border-gray-200 text-gray-500">✏️</button>
+                        <button onClick={ev=>{ev.stopPropagation();deleteEnt(e.id);}} className="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-400">🗑</button>
+                        <span className="text-gray-400">{expandedEnt===e.id?"▲":"▼"}</span>
+                      </div>
+                    </div>
+                    {expandedEnt===e.id&&(
+                      <div className="border-t border-gray-100 p-5">
+                        {editingEnt&&editingEnt.id===e.id?(
+                          <div>
+                            <div className="grid grid-cols-2 gap-3 mb-3">{[["nom","Nom"],["siret","SIRET"],["forme","Forme"],["adresse","Adresse"],["effectif","Effectif"],["ca","CA"]].map(([k,l])=><input key={k} placeholder={l} value={editingEnt[k]||""} onChange={ev=>setEditingEnt(Object.assign({},editingEnt,{[k]:ev.target.value}))} className={inp}/>)}</div>
+                            {[["activite","Activité"],["certifications","Certifications"],["references","Références"]].map(([k,l])=><textarea key={k} placeholder={l} value={editingEnt[k]||""} onChange={ev=>setEditingEnt(Object.assign({},editingEnt,{[k]:ev.target.value}))} className={inp+" mb-2"} rows={2}/>)}
+                            <div className="flex gap-2 mt-2"><button onClick={saveEnt} className="px-4 py-2 rounded-xl text-white text-sm font-semibold" style={{background:GRADIENT}}>Sauvegarder</button><button onClick={()=>setEditingEnt(null)} className="px-4 py-2 rounded-xl text-sm text-gray-500 border bg-white">Annuler</button></div>
+                          </div>
+                        ):(
+                          <div className="grid grid-cols-2 gap-4">{[["Activité",e.activite],["SIRET",e.siret],["Adresse",e.adresse],["Certifications",e.certifications],["Références",e.references]].filter(([,v])=>!!v).map(([k,v])=><div key={k}><div className="text-xs font-semibold text-gray-500 mb-0.5">{k}</div><div className="text-sm text-gray-700">{v}</div></div>)}</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* INSTRUCTIONS */}
+          {page==="instructions"&&(
+            <div className="max-w-3xl">
+              <div className="bg-white rounded-2xl shadow-sm p-5 mb-4 border border-purple-100">
+                <div className="flex items-center justify-between mb-4">
+                  <div><h2 className="font-bold text-gray-800">📚 Bibliothèque d'instructions</h2><p className="text-xs text-gray-500 mt-0.5">Sauvegardez vos instructions et appliquez-les en un clic.</p></div>
+                  <button onClick={()=>setShowAddInstr(true)} className="px-4 py-2 rounded-xl text-white text-sm font-semibold shadow" style={{background:GRADIENT}}>+ Nouvelle</button>
+                </div>
+                <div className="flex gap-2 flex-wrap mb-4">{AI_MODES.map(m=><button key={m} onClick={()=>setInstrMode(m)} className={"px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all "+(instrMode===m?"text-white border-transparent":"bg-white text-gray-600 border-gray-200")} style={instrMode===m?{background:GRADIENT}:{}}>{INSTR_LABELS[m]} ({(instructions[m]||[]).length})</button>)}</div>
+                {showAddInstr&&(
+                  <div className="bg-purple-50 border border-purple-200 rounded-2xl p-4 mb-4">
+                    <h3 className="font-semibold text-gray-700 mb-3 text-sm">Nouvelle instruction — {INSTR_LABELS[instrMode]}</h3>
+                    <input placeholder="Titre *" value={newInstr.titre} onChange={e=>setNewInstr(Object.assign({},newInstr,{titre:e.target.value}))} className={inp+" mb-2"}/>
+                    <textarea placeholder="Contenu..." value={newInstr.contenu} onChange={e=>setNewInstr(Object.assign({},newInstr,{contenu:e.target.value}))} rows={5} className={inp+" mb-3"}/>
+                    <div className="flex gap-2"><button onClick={addInstruction} className="px-4 py-2 rounded-xl text-white text-sm font-semibold" style={{background:GRADIENT}}>Sauvegarder</button><button onClick={()=>{setShowAddInstr(false);setNewInstr({titre:"",contenu:""}); }} className="px-4 py-2 rounded-xl text-sm text-gray-500 border bg-white">Annuler</button></div>
+                  </div>
+                )}
+                {(instructions[instrMode]||[]).length===0?(
+                  <div className="text-center py-10 text-gray-400"><div className="text-4xl mb-2">📭</div><div className="text-sm">Aucune instruction</div><button onClick={()=>setShowAddInstr(true)} className="mt-3 text-xs text-purple-600 hover:underline">+ Créer la première</button></div>
+                ):(
+                  <div className="space-y-3">{(instructions[instrMode]||[]).map(instr=>(
+                    <div key={instr.id} className="border border-gray-100 rounded-2xl p-4 bg-gray-50 hover:border-purple-200">
+                      <div className="flex items-start justify-between gap-3 mb-2">
+                        <div className="font-semibold text-gray-800 text-sm">{instr.titre}</div>
+                        <div className="flex gap-2 flex-shrink-0">
+                          <button onClick={()=>{setAiMode(instrMode);setPage("redaction");applyInstruction(instr);}} className="text-xs px-3 py-1 rounded-lg text-white" style={{background:GRADIENT}}>Utiliser →</button>
+                          <button onClick={()=>deleteInstruction(instrMode,instr.id)} className="text-xs px-2 py-1 rounded-lg border border-red-200 text-red-400">✕</button>
+                        </div>
+                      </div>
+                      <pre className="text-xs text-gray-600 whitespace-pre-wrap font-sans max-h-32 overflow-hidden">{instr.contenu}</pre>
+                    </div>
+                  ))}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
